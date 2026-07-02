@@ -1,0 +1,75 @@
+name: Terraform Infrastructure Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    name: Terraform Deploy
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Infrastructure/Caller
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+      - name: Extract Terraform Outputs
+        id: tf-outputs
+        run: |
+          EC2_HOST=$(terraform output -raw ec2_public_ip)
+          EC2_SSH_KEY=$(terraform output -raw ec2_private_key_pem)
+          echo "ec2_host=$EC2_HOST" >> $GITHUB_OUTPUT
+          echo "ec2_ssh_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$EC2_SSH_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "EC2 Host: $EC2_HOST"
+          echo "SSH Key extracted successfully"
+
+      - name: Set GitHub Secrets from Terraform
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "GH_PAT_TOKEN not configured. Skipping secret updates."
+            echo "EC2_HOST: ${{ steps.tf-outputs.outputs.ec2_host }}"
+            echo "To automate: Create a Personal Access Token and add as GH_PAT_TOKEN secret"
+          else
+            gh secret set EC2_HOST --body "${{ steps.tf-outputs.outputs.ec2_host }}" -R $REPO
+            gh secret set EC2_USER --body "ubuntu" -R $REPO
+            gh secret set EC2_SSH_KEY --body "${{ steps.tf-outputs.outputs.ec2_ssh_key }}" -R $REPO
+            echo "GitHub secrets updated automatically from Terraform outputs"
+            echo "   - EC2_HOST"
+            echo "   - EC2_USER"
+            echo "   - EC2_SSH_KEY"
+          fi
